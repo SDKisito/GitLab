@@ -1,16 +1,19 @@
 variables:
   # Namespaces Kubernetes
   KUBE_NAMESPACE_dev: dev
+  KUBE_NAMESPACE_qa: qa
   KUBE_NAMESPACE_staging: staging
   KUBE_NAMESPACE_prod: prod
 
   # IPs des environnements (à adapter)
   IP_DEV: 80.124.62.186
+  IP_QA: 80.124.62.187
   IP_STAGING: 80.124.62.186
   IP_PROD: 80.124.62.186
 
   # NodePorts exposés pour chaque environnement
   NODEPORT_DEV: 30000
+  NODEPORT_QA: 30003
   NODEPORT_STAGING: 30001
   NODEPORT_PROD: 30002
 
@@ -23,28 +26,41 @@ stages:
   - run
   - push
   - deploy_dev
+  - deploy_qa
   - deploy_staging
   - deploy_prod
 
 test:
   stage: test
-  image: python:latest
+  image: python:3.11
   script:
-    - python3 -m venv venv
+    - python -m venv venv
     - source venv/bin/activate
     - pip install --upgrade pip
     - pip install fastapi pytest httpx jinja2
-    - cd app/
-    - pytest
+    - export PYTHONPATH="$PYTHONPATH:$(pwd)"
+    - pytest app/tests
 
 build:
   stage: build
+  image: docker:24.0.2
+  services:
+    - docker:24.0.2-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_TLS_CERTDIR: ""
   script:
     - docker build -t "$IMAGE_NAME:latest" .
     - docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
 
 run:
   stage: run
+  image: docker:24.0.2
+  services:
+    - docker:24.0.2-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_TLS_CERTDIR: ""
   script:
     - docker run -d -p 80:80 --name fastapi "$IMAGE_NAME:latest"
     - sleep 10
@@ -54,12 +70,19 @@ run:
 
 push:
   stage: push
+  image: docker:24.0.2
+  services:
+    - docker:24.0.2-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_TLS_CERTDIR: ""
   before_script:
     - docker login -u "$DOCKERHUB_USERNAME" -p "$DOCKERHUB_TOKEN"
   script:
     - docker push "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
     - docker push "$IMAGE_NAME:latest"
 
+# Jobs pour arrêter les environnements (manuels)
 stop_dev:
   stage: deploy_dev
   variables:
@@ -68,6 +91,19 @@ stop_dev:
   environment:
     name: dev-$CI_COMMIT_REF_NAME
     action: stop
+  image: alpine/helm:3.11.2
+  script:
+    - helm uninstall app -n $NAMESPACE || echo "Release not found"
+
+stop_qa:
+  stage: deploy_qa
+  variables:
+    NAMESPACE: $KUBE_NAMESPACE_qa
+  when: manual
+  environment:
+    name: qa-$CI_COMMIT_REF_NAME
+    action: stop
+  image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n $NAMESPACE || echo "Release not found"
 
@@ -79,11 +115,28 @@ stop_staging:
   environment:
     name: staging-$CI_COMMIT_REF_NAME
     action: stop
+  image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n $NAMESPACE || echo "Release not found"
 
+# Déploiements par environnement
+.deploy_template: &deploy_template
+  image: alpine/helm:3.11.2
+  services:
+    - docker:24.0.2-dind
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+  script:
+    - cp fastapi/values.yaml values.yml
+    - helm upgrade --install app fastapi/ --values=values.yml \
+        --namespace $NAMESPACE \
+        --set image.repository="$IMAGE_NAME" \
+        --set image.tag="$CI_COMMIT_SHORT_SHA" \
+        --set service.nodeport="$NODEPORT"
+
 deploy_dev:
-  image: docker:latest
+  <<: *deploy_template
   stage: deploy_dev
   environment:
     name: dev-$CI_COMMIT_REF_NAME
@@ -91,21 +144,21 @@ deploy_dev:
     on_stop: stop_dev
   variables:
     NAMESPACE: $KUBE_NAMESPACE_dev
-  services:
-    - docker:dind
-  before_script:
-    - mkdir -p ~/.kube
-    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
-  script:
-    - cp fastapi/values.yaml values.yml
-    - helm upgrade --install app fastapi/ --values=values.yml \
-        --namespace $NAMESPACE \
-        --set image.repository="$IMAGE_NAME" \
-        --set image.tag="$CI_COMMIT_SHORT_SHA" \
-        --set service.nodeport="$NODEPORT_DEV"
+    NODEPORT: $NODEPORT_DEV
+
+deploy_qa:
+  <<: *deploy_template
+  stage: deploy_qa
+  environment:
+    name: qa-$CI_COMMIT_REF_NAME
+    url: http://$IP_QA:$NODEPORT_QA
+    on_stop: stop_qa
+  variables:
+    NAMESPACE: $KUBE_NAMESPACE_qa
+    NODEPORT: $NODEPORT_QA
 
 deploy_staging:
-  image: docker:latest
+  <<: *deploy_template
   stage: deploy_staging
   environment:
     name: staging-$CI_COMMIT_REF_NAME
@@ -113,21 +166,10 @@ deploy_staging:
     on_stop: stop_staging
   variables:
     NAMESPACE: $KUBE_NAMESPACE_staging
-  services:
-    - docker:dind
-  before_script:
-    - mkdir -p ~/.kube
-    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
-  script:
-    - cp fastapi/values.yaml values.yml
-    - helm upgrade --install app fastapi/ --values=values.yml \
-        --namespace $NAMESPACE \
-        --set image.repository="$IMAGE_NAME" \
-        --set image.tag="$CI_COMMIT_SHORT_SHA" \
-        --set service.nodeport="$NODEPORT_STAGING"
+    NODEPORT: $NODEPORT_STAGING
 
 deploy_prod:
-  image: docker:latest
+  <<: *deploy_template
   stage: deploy_prod
   when: manual
   only:
@@ -137,15 +179,4 @@ deploy_prod:
     url: http://$IP_PROD:$NODEPORT_PROD
   variables:
     NAMESPACE: $KUBE_NAMESPACE_prod
-  services:
-    - docker:dind
-  before_script:
-    - mkdir -p ~/.kube
-    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
-  script:
-    - cp fastapi/values.yaml values.yml
-    - helm upgrade --install app fastapi/ --values=values.yml \
-        --namespace $NAMESPACE \
-        --set image.repository="$IMAGE_NAME" \
-        --set image.tag="$CI_COMMIT_SHORT_SHA" \
-        --set service.nodeport="$NODEPORT_PROD"
+    NODEPORT: $NODEPORT_PROD
