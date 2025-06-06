@@ -32,35 +32,32 @@ stages:
 
 test:
   stage: test
-  image: python:3.11
+  image: python:3.12
+  tags:
+    - gitlab
   script:
-    - python -m venv venv
+    - python3 -m venv venv
     - source venv/bin/activate
     - pip install --upgrade pip
     - pip install fastapi pytest httpx jinja2
     - export PYTHONPATH="$PYTHONPATH:$(pwd)"
-    - pytest app/tests
+    - pytest app/test_main.py
 
 build:
   stage: build
-  image: docker:24.0.2
-  services:
-    - docker:24.0.2-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375/
-    DOCKER_TLS_CERTDIR: ""
+  tags:
+    - gitlab
   script:
+    - docker info
     - docker build -t "$IMAGE_NAME:latest" .
     - docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
 
 run:
   stage: run
-  image: docker:24.0.2
-  services:
-    - docker:24.0.2-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375/
-    DOCKER_TLS_CERTDIR: ""
+  tags:
+    - gitlab
+  before_script:
+    - apk add --no-cache curl || true  # ignore erreur si apk pas dispo sur runner shell
   script:
     - docker run -d -p 80:80 --name fastapi "$IMAGE_NAME:latest"
     - sleep 10
@@ -70,21 +67,18 @@ run:
 
 push:
   stage: push
-  image: docker:24.0.2
-  services:
-    - docker:24.0.2-dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375/
-    DOCKER_TLS_CERTDIR: ""
+  tags:
+    - gitlab
   before_script:
-    - docker login -u "$DOCKERHUB_USERNAME" -p "$DOCKERHUB_TOKEN"
+    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
   script:
     - docker push "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
     - docker push "$IMAGE_NAME:latest"
 
-# Jobs pour arrêter les environnements (manuels)
 stop_dev:
   stage: deploy_dev
+  tags:
+    - gitlab
   variables:
     NAMESPACE: $KUBE_NAMESPACE_dev
   when: manual
@@ -97,6 +91,8 @@ stop_dev:
 
 stop_qa:
   stage: deploy_qa
+  tags:
+    - gitlab
   variables:
     NAMESPACE: $KUBE_NAMESPACE_qa
   when: manual
@@ -109,6 +105,8 @@ stop_qa:
 
 stop_staging:
   stage: deploy_staging
+  tags:
+    - gitlab
   variables:
     NAMESPACE: $KUBE_NAMESPACE_staging
   when: manual
@@ -119,11 +117,10 @@ stop_staging:
   script:
     - helm uninstall app -n $NAMESPACE || echo "Release not found"
 
-# Déploiements par environnement
 .deploy_template: &deploy_template
   image: alpine/helm:3.11.2
-  services:
-    - docker:24.0.2-dind
+  tags:
+    - gitlab
   before_script:
     - mkdir -p ~/.kube
     - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
