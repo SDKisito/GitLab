@@ -60,8 +60,8 @@ run:
     - which curl || apk add --no-cache curl
   script:
     - docker rm -f fastapi || true
-    - docker run -d -p 80:80 --name fastapi "$IMAGE_NAME:latest"
-    - sleep 10
+    - docker run -d -p 80:8000 --name fastapi "$IMAGE_NAME:latest"
+    - for i in {1..10}; do curl --fail --max-time 5 http://localhost && break || sleep 2; done
     - curl --fail --max-time 10 http://localhost || (echo "L'application ne répond pas" && docker logs fastapi && exit 1)
     - docker stop fastapi
     - docker rm fastapi
@@ -76,55 +76,18 @@ push:
     - docker push "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
     - docker push "$IMAGE_NAME:latest"
 
-stop_dev:
-  stage: deploy_dev
-  tags:
-    - gitlab
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_DEV
-  when: manual
-  environment:
-    name: dev-$CI_COMMIT_REF_NAME
-    action: stop
-  image: alpine/helm:3.11.2
-  script:
-    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
-
-stop_qa:
-  stage: deploy_qa
-  tags:
-    - gitlab
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_QA
-  when: manual
-  environment:
-    name: qa-$CI_COMMIT_REF_NAME
-    action: stop
-  image: alpine/helm:3.11.2
-  script:
-    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
-
-stop_staging:
-  stage: deploy_staging
-  tags:
-    - gitlab
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_STAGING
-  when: manual
-  environment:
-    name: staging-$CI_COMMIT_REF_NAME
-    action: stop
-  image: alpine/helm:3.11.2
-  script:
-    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
-
 .deploy_template: &deploy_template
   image: alpine/helm:3.11.2
   tags:
     - gitlab
   before_script:
     - mkdir -p ~/.kube
-    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+    - printf '%s' "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+    - echo "[INFO] Contenu partiel de ~/.kube/config :"
+    - head -n 10 ~/.kube/config || true
+    - echo "[INFO] Vérification de la validité de la config Kubernetes"
+    - kubectl config view || { echo "[ERREUR] Le fichier ~/.kube/config est invalide"; exit 1; }
     - export KUBECTL_OPTIONS="--insecure-skip-tls-verify=true"
     - kubectl get nodes $KUBECTL_OPTIONS
   script:
@@ -148,6 +111,20 @@ deploy_dev:
     NAMESPACE: $KUBE_NAMESPACE_DEV
     NODEPORT: $NODEPORT_DEV
 
+stop_dev:
+  stage: deploy_dev
+  tags:
+    - gitlab
+  variables:
+    NAMESPACE: $KUBE_NAMESPACE_DEV
+  when: manual
+  environment:
+    name: dev-$CI_COMMIT_REF_NAME
+    action: stop
+  image: alpine/helm:3.11.2
+  script:
+    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
+
 deploy_qa:
   <<: *deploy_template
   stage: deploy_qa
@@ -159,6 +136,20 @@ deploy_qa:
     NAMESPACE: $KUBE_NAMESPACE_QA
     NODEPORT: $NODEPORT_QA
 
+stop_qa:
+  stage: deploy_qa
+  tags:
+    - gitlab
+  variables:
+    NAMESPACE: $KUBE_NAMESPACE_QA
+  when: manual
+  environment:
+    name: qa-$CI_COMMIT_REF_NAME
+    action: stop
+  image: alpine/helm:3.11.2
+  script:
+    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
+
 deploy_staging:
   <<: *deploy_template
   stage: deploy_staging
@@ -169,6 +160,20 @@ deploy_staging:
   variables:
     NAMESPACE: $KUBE_NAMESPACE_STAGING
     NODEPORT: $NODEPORT_STAGING
+
+stop_staging:
+  stage: deploy_staging
+  tags:
+    - gitlab
+  variables:
+    NAMESPACE: $KUBE_NAMESPACE_STAGING
+  when: manual
+  environment:
+    name: staging-$CI_COMMIT_REF_NAME
+    action: stop
+  image: alpine/helm:3.11.2
+  script:
+    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
 deploy_prod:
   <<: *deploy_template
