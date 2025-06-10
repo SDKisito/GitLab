@@ -1,3 +1,4 @@
+
 variables:
   # Namespaces Kubernetes
   KUBE_NAMESPACE_DEV: dev
@@ -61,8 +62,14 @@ run:
   script:
     - docker rm -f fastapi || true
     - docker run -d -p 80:8000 --name fastapi "$IMAGE_NAME:latest"
-    - for i in {1..10}; do curl --fail --max-time 5 http://localhost && break || sleep 2; done
-    - curl --fail --max-time 10 http://localhost || (echo "L'application ne répond pas" && docker logs fastapi && exit 1)
+    - |
+      echo "Attente que l'application FastAPI soit disponible sur http://localhost:80 ..."
+      for i in {1..10}; do
+        curl --fail --max-time 5 http://localhost:80 && break
+        echo "Tentative $i/10 échouée, nouvel essai dans 2s..."
+        sleep 2
+      done
+    - curl --fail --max-time 10 http://localhost:80 || (echo "L'application ne répond pas"; docker logs fastapi; exit 1)
     - docker stop fastapi
     - docker rm fastapi
 
@@ -81,24 +88,23 @@ push:
   tags:
     - gitlab
   before_script:
+    - set -e
     - mkdir -p ~/.kube
-    - printf '%s' "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+    - echo "[INFO] Décodage de la config Kubernetes..."
+    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
     - chmod 600 ~/.kube/config
     - echo "[INFO] Contenu partiel de ~/.kube/config :"
     - head -n 10 ~/.kube/config || true
-    - echo "[INFO] Vérification de la validité de la config Kubernetes"
-    - kubectl config view || { echo "[ERREUR] Le fichier ~/.kube/config est invalide"; exit 1; }
-    - export KUBECTL_OPTIONS="--insecure-skip-tls-verify=true"
-    - kubectl get nodes $KUBECTL_OPTIONS
+    - echo "[INFO] Vérification de la validité du fichier kubeconfig"
+    - kubectl config view || { echo "[ERREUR] kubeconfig invalide"; exit 1; }
+    - echo "[INFO] Sélection du contexte Kubernetes"
+    - kubectl config use-context saliou-diedhiou/devops-gitlab:datascientest-cluster
+    - echo "[INFO] Vérification des namespaces"
+    - kubectl get namespaces --insecure-skip-tls-verify=true
   script:
     - cp fastapi/values.yaml values.yml
-    - >
-      helm upgrade --install app fastapi/ --values=values.yml
-      --namespace "$NAMESPACE"
-      --set image.repository="$IMAGE_NAME"
-      --set image.tag="$CI_COMMIT_SHORT_SHA"
-      --set service.nodeport="$NODEPORT"
-      --insecure-skip-tls-verify
+    - |
+      helm upgrade --install app fastapi/ --values=values.yml         --namespace "$NAMESPACE"         --set image.repository="$IMAGE_NAME"         --set image.tag="$CI_COMMIT_SHORT_SHA"         --set service.nodeport="$NODEPORT"         --insecure-skip-tls-verify
 
 deploy_dev:
   <<: *deploy_template
