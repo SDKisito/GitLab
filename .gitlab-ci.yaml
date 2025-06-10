@@ -1,11 +1,11 @@
 variables:
   # Namespaces Kubernetes
-  KUBE_NAMESPACE_dev: dev
-  KUBE_NAMESPACE_qa: qa
-  KUBE_NAMESPACE_staging: staging
-  KUBE_NAMESPACE_prod: prod
+  KUBE_NAMESPACE_DEV: dev
+  KUBE_NAMESPACE_QA: qa
+  KUBE_NAMESPACE_STAGING: staging
+  KUBE_NAMESPACE_PROD: prod
 
-  # IPs des environnements (à adapter)
+  # IPs des environnements
   IP_DEV: 80.124.62.186
   IP_QA: 80.124.62.187
   IP_STAGING: 80.124.62.186
@@ -17,7 +17,7 @@ variables:
   NODEPORT_STAGING: 30001
   NODEPORT_PROD: 30002
 
-  # Image Docker de base sur DockerHub
+  # Image Docker sur DockerHub
   IMAGE_NAME: salioudiedhiou/gitlab-fastapi
 
 stages:
@@ -57,11 +57,12 @@ run:
   tags:
     - gitlab
   before_script:
-    - apk add --no-cache curl || true  # ignore erreur si apk pas dispo sur runner shell
+    - which curl || apk add --no-cache curl
   script:
+    - docker rm -f fastapi || true
     - docker run -d -p 80:80 --name fastapi "$IMAGE_NAME:latest"
     - sleep 10
-    - curl --fail http://localhost || (echo "L'application ne répond pas" && exit 1)
+    - curl --fail --max-time 10 http://localhost || (echo "L'application ne répond pas" && docker logs fastapi && exit 1)
     - docker stop fastapi
     - docker rm fastapi
 
@@ -80,42 +81,42 @@ stop_dev:
   tags:
     - gitlab
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_dev
+    NAMESPACE: $KUBE_NAMESPACE_DEV
   when: manual
   environment:
     name: dev-$CI_COMMIT_REF_NAME
     action: stop
   image: alpine/helm:3.11.2
   script:
-    - helm uninstall app -n $NAMESPACE || echo "Release not found"
+    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
 stop_qa:
   stage: deploy_qa
   tags:
     - gitlab
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_qa
+    NAMESPACE: $KUBE_NAMESPACE_QA
   when: manual
   environment:
     name: qa-$CI_COMMIT_REF_NAME
     action: stop
   image: alpine/helm:3.11.2
   script:
-    - helm uninstall app -n $NAMESPACE || echo "Release not found"
+    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
 stop_staging:
   stage: deploy_staging
   tags:
     - gitlab
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_staging
+    NAMESPACE: $KUBE_NAMESPACE_STAGING
   when: manual
   environment:
     name: staging-$CI_COMMIT_REF_NAME
     action: stop
   image: alpine/helm:3.11.2
   script:
-    - helm uninstall app -n $NAMESPACE || echo "Release not found"
+    - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
 .deploy_template: &deploy_template
   image: alpine/helm:3.11.2
@@ -124,13 +125,17 @@ stop_staging:
   before_script:
     - mkdir -p ~/.kube
     - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+    - export KUBECTL_OPTIONS="--insecure-skip-tls-verify=true"
+    - kubectl get nodes $KUBECTL_OPTIONS
   script:
     - cp fastapi/values.yaml values.yml
-    - helm upgrade --install app fastapi/ --values=values.yml \
-        --namespace $NAMESPACE \
-        --set image.repository="$IMAGE_NAME" \
-        --set image.tag="$CI_COMMIT_SHORT_SHA" \
-        --set service.nodeport="$NODEPORT"
+    - >
+      helm upgrade --install app fastapi/ --values=values.yml
+      --namespace "$NAMESPACE"
+      --set image.repository="$IMAGE_NAME"
+      --set image.tag="$CI_COMMIT_SHORT_SHA"
+      --set service.nodeport="$NODEPORT"
+      --insecure-skip-tls-verify
 
 deploy_dev:
   <<: *deploy_template
@@ -140,7 +145,7 @@ deploy_dev:
     url: http://$IP_DEV:$NODEPORT_DEV
     on_stop: stop_dev
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_dev
+    NAMESPACE: $KUBE_NAMESPACE_DEV
     NODEPORT: $NODEPORT_DEV
 
 deploy_qa:
@@ -151,7 +156,7 @@ deploy_qa:
     url: http://$IP_QA:$NODEPORT_QA
     on_stop: stop_qa
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_qa
+    NAMESPACE: $KUBE_NAMESPACE_QA
     NODEPORT: $NODEPORT_QA
 
 deploy_staging:
@@ -162,7 +167,7 @@ deploy_staging:
     url: http://$IP_STAGING:$NODEPORT_STAGING
     on_stop: stop_staging
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_staging
+    NAMESPACE: $KUBE_NAMESPACE_STAGING
     NODEPORT: $NODEPORT_STAGING
 
 deploy_prod:
@@ -175,5 +180,5 @@ deploy_prod:
     name: prod
     url: http://$IP_PROD:$NODEPORT_PROD
   variables:
-    NAMESPACE: $KUBE_NAMESPACE_prod
+    NAMESPACE: $KUBE_NAMESPACE_PROD
     NODEPORT: $NODEPORT_PROD
