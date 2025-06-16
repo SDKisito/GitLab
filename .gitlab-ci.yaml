@@ -1,23 +1,19 @@
 variables:
-  # Noms des namespaces Kubernetes
   KUBE_NAMESPACE_DEV: dev
   KUBE_NAMESPACE_QA: qa
   KUBE_NAMESPACE_STAGING: staging
   KUBE_NAMESPACE_PROD: prod
 
-  # IPs des environnements (attention : STAGING et PROD ont la même IP que DEV)
   IP_DEV: 80.124.62.186
-  IP_QA: 80.124.62.187
-  IP_STAGING: 80.124.62.188
-  IP_PROD: 80.124.62.189
+  IP_QA: 80.124.62.186
+  IP_STAGING: 80.124.62.186
+  IP_PROD: 80.124.62.186
 
-  # NodePorts exposés pour chaque environnement
   NODEPORT_DEV: 30000
   NODEPORT_QA: 30003
   NODEPORT_STAGING: 30001
   NODEPORT_PROD: 30002
 
-  # Image Docker
   IMAGE_NAME: salioudiedhiou/gitlab-fastapi
 
 stages:
@@ -33,7 +29,7 @@ stages:
 test:
   stage: test
   image: python:3.12
-  tags: [gitlab]
+  tags: [local]
   script:
     - python3 -m venv venv
     - source venv/bin/activate
@@ -44,7 +40,7 @@ test:
 
 build:
   stage: build
-  tags: [gitlab]
+  tags: [local]
   script:
     - docker info
     - docker build -t "$IMAGE_NAME:latest" .
@@ -52,7 +48,7 @@ build:
 
 run:
   stage: run
-  tags: [gitlab]
+  tags: [local]
   before_script:
     - which curl || apk add --no-cache curl
   script:
@@ -71,7 +67,7 @@ run:
 
 push:
   stage: push
-  tags: [gitlab]
+  tags: [local]
   before_script:
     - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
   script:
@@ -80,7 +76,7 @@ push:
 
 .deploy_template: &deploy_template
   image: alpine/helm:3.11.2
-  tags: [gitlab]
+  tags: [local]
   before_script:
     - set -e
     - mkdir -p ~/.kube
@@ -90,7 +86,7 @@ push:
     - export KUBECONFIG=$HOME/.kube/config
     - echo "[INFO] Vérification de la validité du fichier kubeconfig"
     - kubectl config view || { echo "[ERREUR] kubeconfig invalide"; exit 1; }
-    - kubectl config use-context minikube
+    - kubectl config use-context k3s
     - kubectl get namespaces
   script:
     - cp fastapi/values.yaml values.yml
@@ -101,7 +97,6 @@ push:
         --set image.tag="$CI_COMMIT_SHORT_SHA" \
         --set service.nodeport="$NODEPORT"
 
-# Déploiement DEV
 deploy_dev:
   <<: *deploy_template
   stage: deploy_dev
@@ -115,7 +110,7 @@ deploy_dev:
 
 stop_dev:
   stage: deploy_dev
-  tags: [gitlab]
+  tags: [local]
   environment:
     name: dev-$CI_COMMIT_REF_NAME
     action: stop
@@ -126,7 +121,6 @@ stop_dev:
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
-# Déploiement QA
 deploy_qa:
   <<: *deploy_template
   stage: deploy_qa
@@ -140,7 +134,7 @@ deploy_qa:
 
 stop_qa:
   stage: deploy_qa
-  tags: [gitlab]
+  tags: [local]
   environment:
     name: qa-$CI_COMMIT_REF_NAME
     action: stop
@@ -151,7 +145,6 @@ stop_qa:
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
-# Déploiement STAGING
 deploy_staging:
   <<: *deploy_template
   stage: deploy_staging
@@ -165,7 +158,7 @@ deploy_staging:
 
 stop_staging:
   stage: deploy_staging
-  tags: [gitlab]
+  tags: [local]
   environment:
     name: staging-$CI_COMMIT_REF_NAME
     action: stop
@@ -176,16 +169,5 @@ stop_staging:
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
-# Déploiement PROD
 deploy_prod:
   <<: *deploy_template
-  stage: deploy_prod
-  when: manual
-  only:
-    - main
-  environment:
-    name: prod
-    url: http://$IP_PROD:$NODEPORT_PROD
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_PROD
-    NODEPORT: $NODEPORT_PROD
