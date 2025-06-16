@@ -1,4 +1,3 @@
-
 variables:
   # Namespaces Kubernetes
   KUBE_NAMESPACE_DEV: dev
@@ -93,18 +92,23 @@ push:
     - echo "[INFO] Décodage de la config Kubernetes..."
     - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
     - chmod 600 ~/.kube/config
+    - export KUBECONFIG=$HOME/.kube/config
     - echo "[INFO] Contenu partiel de ~/.kube/config :"
     - head -n 10 ~/.kube/config || true
     - echo "[INFO] Vérification de la validité du fichier kubeconfig"
     - kubectl config view || { echo "[ERREUR] kubeconfig invalide"; exit 1; }
     - echo "[INFO] Sélection du contexte Kubernetes"
-    - kubectl config use-context saliou-diedhiou/devops-gitlab:datascientest-cluster
+    - kubectl config use-context minikube
     - echo "[INFO] Vérification des namespaces"
-    - kubectl get namespaces --insecure-skip-tls-verify=true
+    - kubectl get namespaces
   script:
     - cp fastapi/values.yaml values.yml
     - |
-      helm upgrade --install app fastapi/ --values=values.yml         --namespace "$NAMESPACE"         --set image.repository="$IMAGE_NAME"         --set image.tag="$CI_COMMIT_SHORT_SHA"         --set service.nodeport="$NODEPORT"         --insecure-skip-tls-verify
+      helm upgrade --install app fastapi/ --values=values.yml \
+        --namespace "$NAMESPACE" \
+        --set image.repository="$IMAGE_NAME" \
+        --set image.tag="$CI_COMMIT_SHORT_SHA" \
+        --set service.nodeport="$NODEPORT"
 
 deploy_dev:
   <<: *deploy_template
