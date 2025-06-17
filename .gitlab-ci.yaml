@@ -78,7 +78,7 @@ push:
     - docker push "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
     - docker push "$IMAGE_NAME:latest"
 
-# ==================== Template déploiement K8s ====================
+# ==================== Template de déploiement K8s ====================
 .deploy_template: &deploy_template
   image: alpine/helm:3.11.2
   tags: [local]
@@ -89,9 +89,8 @@ push:
     - sudo chown $(whoami):$(whoami) ~/.kube/config
     - chmod 600 ~/.kube/config
     - export KUBECONFIG=$HOME/.kube/config
-    - kubectl config view || (echo "[ERREUR] kubeconfig invalide"; exit 1)
+    - kubectl config view
     - kubectl get namespace "$NAMESPACE" || kubectl create namespace "$NAMESPACE"
-
   script:
     - cp fastapi/values.yaml values.yml
     - |
@@ -121,8 +120,6 @@ stop_dev:
   environment:
     name: dev-$CI_COMMIT_REF_NAME
     action: stop
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_DEV
   image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
@@ -146,8 +143,6 @@ stop_qa:
   environment:
     name: qa-$CI_COMMIT_REF_NAME
     action: stop
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_QA
   image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
@@ -171,8 +166,6 @@ stop_staging:
   environment:
     name: staging-$CI_COMMIT_REF_NAME
     action: stop
-  variables:
-    NAMESPACE: $KUBE_NAMESPACE_STAGING
   image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
