@@ -1,4 +1,7 @@
+# ==================== Variables globales ====================
 variables:
+  IMAGE_NAME: salioudiedhiou/gitlab-fastapi
+
   KUBE_NAMESPACE_DEV: dev
   KUBE_NAMESPACE_QA: qa
   KUBE_NAMESPACE_STAGING: staging
@@ -14,8 +17,7 @@ variables:
   NODEPORT_STAGING: 30001
   NODEPORT_PROD: 30002
 
-  IMAGE_NAME: salioudiedhiou/gitlab-fastapi
-
+# ==================== Stages ====================
 stages:
   - test
   - build
@@ -26,6 +28,7 @@ stages:
   - deploy_staging
   - deploy_prod
 
+# ==================== Tests ====================
 test:
   stage: test
   image: python:3.12
@@ -38,25 +41,25 @@ test:
     - export PYTHONPATH="$PYTHONPATH:$(pwd)"
     - pytest app/test_main.py
 
+# ==================== Build de l'image ====================
 build:
   stage: build
   tags: [local]
   script:
-    - docker info
     - docker build -t "$IMAGE_NAME:latest" .
     - docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
 
+# ==================== Test local de l'image ====================
 run:
   stage: run
   tags: [local]
   before_script:
-    - which curl || apk add --no-cache curl
+    - apk add --no-cache curl || true
   script:
     - docker rm -f fastapi || true
     - docker run -d -p 80:8000 --name fastapi "$IMAGE_NAME:latest"
     - |
-      echo "Attente que l'application FastAPI soit disponible sur http://localhost:80 ..."
-      for i in {1..10}; do
+      for i in $(seq 1 10); do
         curl --fail --max-time 5 http://localhost:80 && break
         echo "Tentative $i/10 échouée, nouvel essai dans 2s..."
         sleep 2
@@ -65,6 +68,7 @@ run:
     - docker stop fastapi
     - docker rm fastapi
 
+# ==================== Push sur Docker Hub ====================
 push:
   stage: push
   tags: [local]
@@ -74,20 +78,20 @@ push:
     - docker push "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
     - docker push "$IMAGE_NAME:latest"
 
+# ==================== Template déploiement K8s ====================
 .deploy_template: &deploy_template
   image: alpine/helm:3.11.2
   tags: [local]
   before_script:
     - set -e
     - mkdir -p ~/.kube
-    - echo "[INFO] Décodage de la config Kubernetes..."
-    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
+    - sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+    - sudo chown $(whoami):$(whoami) ~/.kube/config
     - chmod 600 ~/.kube/config
     - export KUBECONFIG=$HOME/.kube/config
-    - echo "[INFO] Vérification de la validité du fichier kubeconfig"
-    - kubectl config view || { echo "[ERREUR] kubeconfig invalide"; exit 1; }
-    - kubectl config use-context k3s
-    - kubectl get namespaces
+    - kubectl config view || (echo "[ERREUR] kubeconfig invalide"; exit 1)
+    - kubectl get namespace "$NAMESPACE" || kubectl create namespace "$NAMESPACE"
+
   script:
     - cp fastapi/values.yaml values.yml
     - |
@@ -96,7 +100,9 @@ push:
         --set image.repository="$IMAGE_NAME" \
         --set image.tag="$CI_COMMIT_SHORT_SHA" \
         --set service.nodeport="$NODEPORT"
+  retry: 2
 
+# ==================== Déploiement DEV ====================
 deploy_dev:
   <<: *deploy_template
   stage: deploy_dev
@@ -111,16 +117,17 @@ deploy_dev:
 stop_dev:
   stage: deploy_dev
   tags: [local]
+  when: manual
   environment:
     name: dev-$CI_COMMIT_REF_NAME
     action: stop
-  when: manual
   variables:
     NAMESPACE: $KUBE_NAMESPACE_DEV
   image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
+# ==================== Déploiement QA ====================
 deploy_qa:
   <<: *deploy_template
   stage: deploy_qa
@@ -135,16 +142,17 @@ deploy_qa:
 stop_qa:
   stage: deploy_qa
   tags: [local]
+  when: manual
   environment:
     name: qa-$CI_COMMIT_REF_NAME
     action: stop
-  when: manual
   variables:
     NAMESPACE: $KUBE_NAMESPACE_QA
   image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
+# ==================== Déploiement STAGING ====================
 deploy_staging:
   <<: *deploy_template
   stage: deploy_staging
@@ -159,15 +167,26 @@ deploy_staging:
 stop_staging:
   stage: deploy_staging
   tags: [local]
+  when: manual
   environment:
     name: staging-$CI_COMMIT_REF_NAME
     action: stop
-  when: manual
   variables:
     NAMESPACE: $KUBE_NAMESPACE_STAGING
   image: alpine/helm:3.11.2
   script:
     - helm uninstall app -n "$NAMESPACE" || echo "Release not found"
 
+# ==================== Déploiement PROD (manuel uniquement) ====================
 deploy_prod:
   <<: *deploy_template
+  stage: deploy_prod
+  when: manual
+  only:
+    - main
+  environment:
+    name: prod
+    url: http://$IP_PROD:$NODEPORT_PROD
+  variables:
+    NAMESPACE: $KUBE_NAMESPACE_PROD
+    NODEPORT: $NODEPORT_PROD
